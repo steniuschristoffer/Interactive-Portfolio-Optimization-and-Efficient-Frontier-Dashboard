@@ -1,6 +1,8 @@
 import yfinance as yf
 import pandas as pd
 import datetime as dt
+import numpy as np
+import scipy.optimize as sco
 
 
 
@@ -61,8 +63,7 @@ def fetch_historical_data(tickers: list, start_date: str, end_date: str) -> pd.D
 
         return pd.DataFrame()
 
-
-def calculate_returns(price_data: pd.DataFrame, nan_threshold = 0.3) -> tuple:
+def calculate_returns(price_data: pd.DataFrame, nan_threshold = 0.03) -> tuple:
     """
     Calculates annualized mean returns and covariance matrix from price data.
 
@@ -108,3 +109,115 @@ def calculate_returns(price_data: pd.DataFrame, nan_threshold = 0.3) -> tuple:
     cov_matrix = returns.cov() * 252
 
     return mean_returns, cov_matrix, tickers_dropped_quality
+
+def run_monte_carlo_simulation(num_portfolios: int, mean_returns: pd.Series, cov_matrix: pd.DataFrame, risk_free_rate: float = 0.02) -> pd.DataFrame:
+    """
+    Runs a Monte Carlo simulation to generate a large number of random portfolios.
+
+    Args:
+        num_portfolios (int): The number of random portfolios to generate.
+        mean_returns (pd.Series): A pandas Series of annualized mean returns for each asset.
+        cov_matrix (pd.DataFrame): The annualized covariance matrix of returns for the assets.
+
+    Returns:
+        pd.DataFrame: A DataFrame containing the returns, volatility, and weights for each simulated portfolio.
+    """
+    num_assets = len(mean_returns)
+    results = np.zeros((3 + num_assets, num_portfolios)) # 3 for return, volatility, sharpe + one for each weight
+
+    for i in range(num_portfolios):
+        # 1. Generate random weights that sum to 1
+        weights = np.random.random(num_assets)
+        weights /= np.sum(weights)
+
+        # 2. Calculate portfolio return and volatility
+        portfolio_return = np.sum(mean_returns * weights)
+        portfolio_volatility = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+
+        # Store the results
+        results[0, i] = portfolio_return
+        results[1, i] = portfolio_volatility
+        # We will calculate Sharpe Ratio later, but reserve the space for it
+        results[2, i] = (portfolio_return - risk_free_rate) / portfolio_volatility
+        
+        # Store the weights for each asset
+        for j in range(len(weights)):
+            results[j + 3, i] = weights[j]
+
+    # Convert results array to a DataFrame for easier handling
+    column_names = ['return', 'volatility', 'sharpe'] + [ticker for ticker in mean_returns.index]
+    results_df = pd.DataFrame(results.T, columns=column_names)
+    
+    print(f"Monte Carlo simulation completed with {num_portfolios} portfolios.")
+    return results_df
+
+def calculate_optimal_portfolios(mean_returns: pd.Series, cov_matrix: pd.DataFrame, risk_free_rate: float = 0.02) -> tuple:
+    """
+    Calculates the optimal portfolios for Maximum Sharpe Ratio and Minimum Volatility.
+
+    Args:
+        mean_returns (pd.Series): A pandas Series of annualized mean returns.
+        cov_matrix (pd.DataFrame): The annualized covariance matrix of returns.
+        risk_free_rate (float): The risk-free rate for the Sharpe Ratio calculation.
+
+    Returns:
+        tuple: A tuple containing:
+            - A dictionary with the details of the max sharpe portfolio.
+            - A dictionary with the details of the min volatility portfolio.
+    """
+    num_assets = len(mean_returns)
+
+    # Helper function to calculate portfolio performance
+    def portfolio_performance(weights, mean_returns, cov_matrix, risk_free_rate):
+        returns = np.sum(mean_returns * weights)
+        volatility = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+        sharpe = (returns - risk_free_rate) / volatility
+        return returns, volatility, sharpe
+
+    # Objective function to minimize (negative Sharpe Ratio)
+    def neg_sharpe_ratio(weights, mean_returns, cov_matrix, risk_free_rate):
+        return -portfolio_performance(weights, mean_returns, cov_matrix, risk_free_rate)[2]
+
+    # Objective function to minimize (volatility)
+    def portfolio_volatility(weights, mean_returns, cov_matrix):
+        return portfolio_performance(weights, mean_returns, cov_matrix, 0)[1]
+
+    # --- Optimization for Maximum Sharpe Ratio ---
+
+    # Constraints: weights must sum to 1
+    constraints = ({'type': 'eq', 'fun': lambda weights: np.sum(weights) - 1})
+
+    # Bounds: each weight must be between 0 and 1
+    bounds = tuple((0, 1) for asset in range(num_assets))
+
+    # Initial guess: equal weights
+    initial_guess = num_assets * [1. / num_assets]
+
+    max_sharpe_solver = sco.minimize(neg_sharpe_ratio, initial_guess, args=(mean_returns, cov_matrix, risk_free_rate), method='SLSQP', bounds=bounds, constraints=constraints)
+    
+    max_sharpe_weights = max_sharpe_solver.x
+
+    max_sharpe_return, max_sharpe_vol, max_sharpe_ratio_val = portfolio_performance(max_sharpe_weights, mean_returns, cov_matrix, risk_free_rate)
+    
+    max_sharpe_portfolio = {
+        'return': max_sharpe_return,
+        'volatility': max_sharpe_vol,
+        'sharpe_ratio': max_sharpe_ratio_val,
+        'weights': max_sharpe_weights
+    }
+
+    # --- Optimization for Minimum Volatility ---
+    min_vol_solver = sco.minimize(portfolio_volatility, initial_guess, args=(mean_returns, cov_matrix), method='SLSQP', bounds=bounds, constraints=constraints)
+
+    min_vol_weights = min_vol_solver.x
+    min_vol_return, min_vol_vol, min_vol_sharpe = portfolio_performance(min_vol_weights, mean_returns, cov_matrix, risk_free_rate)
+
+    min_vol_portfolio = {
+        'return': min_vol_return,
+        'volatility': min_vol_vol,
+        'sharpe_ratio': min_vol_sharpe,
+        'weights': min_vol_weights
+    }
+    
+    print("Optimal portfolio calculations completed.")
+    return max_sharpe_portfolio, min_vol_portfolio
