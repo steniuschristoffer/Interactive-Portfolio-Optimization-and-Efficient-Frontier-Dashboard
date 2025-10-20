@@ -125,7 +125,10 @@ def run_monte_carlo_simulation(num_portfolios: int, mean_returns: pd.Series, cov
     num_assets = len(mean_returns)
     results = np.zeros((3 + num_assets, num_portfolios)) # 3 for return, volatility, sharpe + one for each weight
 
+    simulations = 0
     for i in range(num_portfolios):
+        simulations += 1
+        print(f"{round((simulations/num_portfolios)*100,4)}%")
         # 1. Generate random weights that sum to 1
         weights = np.random.random(num_assets)
         weights /= np.sum(weights)
@@ -221,3 +224,55 @@ def calculate_optimal_portfolios(mean_returns: pd.Series, cov_matrix: pd.DataFra
     
     print("Optimal portfolio calculations completed.")
     return max_sharpe_portfolio, min_vol_portfolio
+
+def calculate_efficient_frontier(mean_returns: pd.Series, cov_matrix: pd.DataFrame, num_points: int = 100) -> tuple:
+    """
+    Calculates the efficient frontier by finding the minimum volatility for a range of target returns.
+
+    Args:
+        mean_returns (pd.Series): A pandas Series of annualized mean returns.
+        cov_matrix (pd.DataFrame): The annualized covariance matrix of returns.
+        num_points (int): The number of points to calculate on the frontier curve.
+
+    Returns:
+        tuple: A tuple containing:
+            - A list of portfolio volatilities for each point on the frontier.
+            - A list of portfolio returns for each point on the frontier.
+    """
+    num_assets = len(mean_returns)
+    
+    # Objective function to minimize (volatility)
+    def portfolio_volatility(weights, mean_returns, cov_matrix):
+        return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+
+    # Bounds and initial guess are the same as before
+    bounds = tuple((0, 1) for asset in range(num_assets))
+    initial_guess = num_assets * [1. / num_assets]
+    
+    # We'll trace the frontier from the min volatility portfolio's return up to the max single asset return
+    # First, find the min volatility return to set the start of our range
+    min_vol_solver = sco.minimize(portfolio_volatility, initial_guess,
+                                  args=(mean_returns, cov_matrix),
+                                  method='SLSQP', bounds=bounds, 
+                                  constraints=({'type': 'eq', 'fun': lambda weights: np.sum(weights) - 1}))
+    min_vol_return = np.sum(mean_returns * min_vol_solver.x)
+    max_return = mean_returns.max()
+
+    target_returns = np.linspace(min_vol_return, max_return, num_points)
+    frontier_volatilities = []
+
+    for target in target_returns:
+        # Add the new constraint for the target return
+        constraints = (
+            {'type': 'eq', 'fun': lambda weights: np.sum(weights) - 1},
+            {'type': 'eq', 'fun': lambda weights: np.sum(mean_returns * weights) - target}
+        )
+        
+        solver = sco.minimize(portfolio_volatility, initial_guess,
+                              args=(mean_returns, cov_matrix),
+                              method='SLSQP', bounds=bounds, constraints=constraints)
+        
+        # We get the volatility from the solver's result (the minimized value)
+        frontier_volatilities.append(solver.fun)
+
+    return frontier_volatilities, target_returns
