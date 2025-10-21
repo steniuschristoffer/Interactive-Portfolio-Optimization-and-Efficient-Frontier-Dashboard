@@ -46,7 +46,7 @@ def fetch_historical_data(tickers: list, start_date: str, end_date: str) -> pd.D
 
         if successful_tickers:
             # We need to stack the multi-level columns and select the successful tickers
-            clean_data = data.stack(level=0).unstack(level=1)['Adj Close'][successful_tickers]
+            clean_data = data.stack(level=0, future_stack= True).unstack(level=1)['Adj Close'][successful_tickers]
         else:
             clean_data = pd.DataFrame()
 
@@ -81,7 +81,7 @@ def calculate_returns(price_data: pd.DataFrame, nan_threshold = 0.03) -> tuple:
             - A pandas DataFrame of the annualized covariance matrix.
             - A list of tickers dropped due to poor data quality.
     """
-    # --- NEW: Step 1 - Column Filtering based on NaN threshold ---
+    # --- Step 1 - Column Filtering based on NaN threshold ---
     nan_percentage = price_data.isnull().sum() / len(price_data)
     tickers_to_keep = nan_percentage[nan_percentage <= nan_threshold].index.tolist()
     tickers_dropped_quality = nan_percentage[nan_percentage > nan_threshold].index.tolist()
@@ -125,10 +125,7 @@ def run_monte_carlo_simulation(num_portfolios: int, mean_returns: pd.Series, cov
     num_assets = len(mean_returns)
     results = np.zeros((3 + num_assets, num_portfolios)) # 3 for return, volatility, sharpe + one for each weight
 
-    simulations = 0
     for i in range(num_portfolios):
-        simulations += 1
-        print(f"{round((simulations/num_portfolios)*100,4)}%")
         # 1. Generate random weights that sum to 1
         weights = np.random.random(num_assets)
         weights /= np.sum(weights)
